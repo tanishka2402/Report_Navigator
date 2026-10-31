@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   BookOpen, FileText, Plus, Search, Settings, HelpCircle,
   MessageSquare, Upload, Sparkles, Send, Paperclip,
-  CheckCircle2, Loader2, AlertCircle, FileUp, X,
+  Loader2, AlertCircle, FileUp, X,
 } from 'lucide-react'
 
 import {

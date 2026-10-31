@@ -1,4 +1,6 @@
+
 import json
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -6,7 +8,10 @@ from typing import Dict, List, Tuple
 import faiss
 import numpy as np
 from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer
+from google import genai
+from google.genai import types
+
+from dotenv import load_dotenv
 
 from app.services.chunker import create_document_chunks
 
@@ -14,6 +19,8 @@ from app.services.chunker import create_document_chunks
 # ==================================================
 # CONFIGURATION
 # ==================================================
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
@@ -24,39 +31,121 @@ INDEX_DIR.mkdir(
     exist_ok=True
 )
 
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_DIMENSION = 768
 
 CHUNK_FILE = "chunks.json"
 VECTOR_FILE = "vectors.faiss"
 
 RRF_K = 60
 
+_embedding_client = None
+
 
 # ==================================================
-# EMBEDDING MODEL
+# GEMINI EMBEDDING CLIENT
 # ==================================================
 
-_embedding_model = None
-
-
-def get_embedding_model() -> SentenceTransformer:
+def get_embedding_client():
     """
-    Load the embedding model only once.
+    Create the Gemini client only when embeddings are needed.
     """
 
-    global _embedding_model
+    global _embedding_client
 
-    if _embedding_model is None:
+    if _embedding_client is None:
 
-        print("Loading embedding model...")
+        api_key = os.getenv("GEMINI_API_KEY")
 
-        _embedding_model = SentenceTransformer(
-            MODEL_NAME
+        if not api_key:
+            raise RuntimeError(
+                "GEMINI_API_KEY is not configured."
+            )
+
+        _embedding_client = genai.Client(
+            api_key=api_key
         )
 
-        print("Embedding model loaded.")
+    return _embedding_client
 
-    return _embedding_model
+
+# ==================================================
+# GENERATE EMBEDDINGS
+# ==================================================
+
+def generate_embeddings(
+    texts: List[str],
+    task_type: str
+) -> np.ndarray:
+    """
+    Generate normalized Gemini embeddings in batches.
+
+    task_type:
+        RETRIEVAL_DOCUMENT for document chunks
+        RETRIEVAL_QUERY for user questions
+    """
+
+    if not texts:
+        return np.empty(
+            (0, EMBEDDING_DIMENSION),
+            dtype=np.float32
+        )
+
+    client = get_embedding_client()
+
+    all_embeddings = []
+
+    batch_size = 50
+
+    for start in range(0, len(texts), batch_size):
+
+        batch = texts[start:start + batch_size]
+
+        response = client.models.embed_content(
+            model=EMBEDDING_MODEL,
+            contents=batch,
+            config=types.EmbedContentConfig(
+                task_type=task_type,
+                output_dimensionality=EMBEDDING_DIMENSION
+            )
+        )
+
+        if not response.embeddings:
+            raise RuntimeError(
+                "Gemini returned no embeddings."
+            )
+
+        all_embeddings.extend(
+            embedding.values
+            for embedding in response.embeddings
+        )
+
+    embeddings = np.asarray(
+        all_embeddings,
+        dtype=np.float32
+    )
+
+    if embeddings.shape != (
+        len(texts),
+        EMBEDDING_DIMENSION
+    ):
+        raise RuntimeError(
+            f"Unexpected embedding shape: {embeddings.shape}"
+        )
+
+    # Normalize vectors for FAISS inner-product similarity.
+    norms = np.linalg.norm(
+        embeddings,
+        axis=1,
+        keepdims=True
+    )
+
+    embeddings = embeddings / np.maximum(
+        norms,
+        1e-12
+    )
+
+    return embeddings
 
 
 # ==================================================
@@ -85,8 +174,8 @@ def build_document_index(
     """
     Create chunks and FAISS vector index.
 
-    BM25 is built later in memory when the document
-    is loaded for retrieval.
+    Gemini generates document embeddings.
+    BM25 is built later when the document is loaded.
     """
 
     print(f"Creating chunks for: {document_id}")
@@ -106,24 +195,14 @@ def build_document_index(
         for chunk in chunks
     ]
 
-    model = get_embedding_model()
-
     print(
-        f"Generating embeddings for "
+        f"Generating Gemini embeddings for "
         f"{len(texts)} chunks..."
     )
 
-    embeddings = model.encode(
+    embeddings = generate_embeddings(
         texts,
-        batch_size=32,
-        show_progress_bar=True,
-        convert_to_numpy=True,
-        normalize_embeddings=True
-    )
-
-    embeddings = np.asarray(
-        embeddings,
-        dtype=np.float32
+        task_type="RETRIEVAL_DOCUMENT"
     )
 
     vector_index = faiss.IndexFlatIP(
@@ -141,13 +220,13 @@ def build_document_index(
         exist_ok=True
     )
 
-    # Save FAISS index
+    # Save FAISS index.
     faiss.write_index(
         vector_index,
         str(document_dir / VECTOR_FILE)
     )
 
-    # Save chunks and metadata
+    # Save chunks and metadata.
     with open(
         document_dir / CHUNK_FILE,
         "w",
@@ -187,13 +266,8 @@ def build_document_index(
 
 class DocumentRetriever:
     """
-    Loads one indexed document and keeps all retrieval
+    Loads one indexed document and keeps retrieval
     resources in memory.
-
-    This prevents:
-    - repeated FAISS disk loading
-    - repeated chunks.json loading
-    - repeated BM25 index construction
     """
 
     def __init__(
@@ -203,35 +277,23 @@ class DocumentRetriever:
 
         self.document_id = document_id
 
-        document_dir = (
-            INDEX_DIR / document_id
-        )
+        document_dir = INDEX_DIR / document_id
 
-        vector_path = (
-            document_dir / VECTOR_FILE
-        )
-
-        chunk_path = (
-            document_dir / CHUNK_FILE
-        )
+        vector_path = document_dir / VECTOR_FILE
+        chunk_path = document_dir / CHUNK_FILE
 
         if not vector_path.exists():
-
             raise FileNotFoundError(
-                f"FAISS index not found for "
-                f"document: {document_id}"
+                f"FAISS index not found for document: {document_id}"
             )
 
         if not chunk_path.exists():
-
             raise FileNotFoundError(
-                f"Chunk file not found for "
-                f"document: {document_id}"
+                f"Chunk file not found for document: {document_id}"
             )
 
         print(
-            f"Loading document index: "
-            f"{document_id}"
+            f"Loading document index: {document_id}"
         )
 
         self.vector_index = faiss.read_index(
@@ -249,9 +311,7 @@ class DocumentRetriever:
         print("Building BM25 index...")
 
         self.tokenized_corpus = [
-            tokenize(
-                chunk["content"]
-            )
+            tokenize(chunk["content"])
             for chunk in self.chunks
         ]
 
@@ -260,8 +320,7 @@ class DocumentRetriever:
         )
 
         print(
-            f"Retriever ready with "
-            f"{len(self.chunks)} chunks."
+            f"Retriever ready with {len(self.chunks)} chunks."
         )
 
     # ----------------------------------------------
@@ -277,24 +336,14 @@ class DocumentRetriever:
         if not self.chunks:
             return []
 
-        model = get_embedding_model()
-
-        query_vector = model.encode(
+        query_vector = generate_embeddings(
             [query],
-            convert_to_numpy=True,
-            normalize_embeddings=True
+            task_type="RETRIEVAL_QUERY"
         )
 
-        query_vector = np.asarray(
+        scores, indices = self.vector_index.search(
             query_vector,
-            dtype=np.float32
-        )
-
-        scores, indices = (
-            self.vector_index.search(
-                query_vector,
-                min(top_k, len(self.chunks))
-            )
+            min(top_k, len(self.chunks))
         )
 
         results = []
@@ -341,9 +390,7 @@ class DocumentRetriever:
 
         for index in ranked_indices[:top_k]:
 
-            score = float(
-                scores[index]
-            )
+            score = float(scores[index])
 
             if score <= 0:
                 continue
@@ -366,13 +413,11 @@ class DocumentRetriever:
     ) -> List[Dict]:
 
         if not query or not query.strip():
-
             raise ValueError(
                 "Query cannot be empty."
             )
 
         if not self.chunks:
-
             return []
 
         search_depth = min(
@@ -380,25 +425,19 @@ class DocumentRetriever:
             len(self.chunks)
         )
 
-        semantic_results = (
-            self.semantic_search(
-                query=query,
-                top_k=search_depth
-            )
+        semantic_results = self.semantic_search(
+            query=query,
+            top_k=search_depth
         )
 
-        keyword_results = (
-            self.keyword_search(
-                query=query,
-                top_k=search_depth
-            )
+        keyword_results = self.keyword_search(
+            query=query,
+            top_k=search_depth
         )
 
-        fused_results = (
-            reciprocal_rank_fusion(
-                semantic_results,
-                keyword_results
-            )
+        fused_results = reciprocal_rank_fusion(
+            semantic_results,
+            keyword_results
         )
 
         return fused_results[:top_k]
@@ -422,14 +461,10 @@ def reciprocal_rank_fusion(
     ):
 
         chunk = result["chunk"]
-
         chunk_id = chunk["chunk_id"]
 
         fused_scores[chunk_id] = (
-            fused_scores.get(
-                chunk_id,
-                0.0
-            )
+            fused_scores.get(chunk_id, 0.0)
             + 1 / (RRF_K + rank)
         )
 
@@ -441,14 +476,10 @@ def reciprocal_rank_fusion(
     ):
 
         chunk = result["chunk"]
-
         chunk_id = chunk["chunk_id"]
 
         fused_scores[chunk_id] = (
-            fused_scores.get(
-                chunk_id,
-                0.0
-            )
+            fused_scores.get(chunk_id, 0.0)
             + 1 / (RRF_K + rank)
         )
 
@@ -456,8 +487,7 @@ def reciprocal_rank_fusion(
 
     ranked_ids = sorted(
         fused_scores,
-        key=lambda chunk_id:
-            fused_scores[chunk_id],
+        key=lambda chunk_id: fused_scores[chunk_id],
         reverse=True
     )
 
@@ -467,9 +497,7 @@ def reciprocal_rank_fusion(
 
         results.append({
             **chunk_lookup[chunk_id],
-            "rrf_score": fused_scores[
-                chunk_id
-            ]
+            "rrf_score": fused_scores[chunk_id]
         })
 
     return results
@@ -482,26 +510,21 @@ def reciprocal_rank_fusion(
 def load_document_index(
     document_id: str
 ) -> Tuple:
-
     """
+    Load an existing FAISS index and its chunks.
+
     Kept for compatibility with existing code.
     """
 
     document_dir = INDEX_DIR / document_id
 
-    vector_path = (
-        document_dir / VECTOR_FILE
-    )
-
-    chunk_path = (
-        document_dir / CHUNK_FILE
-    )
+    vector_path = document_dir / VECTOR_FILE
+    chunk_path = document_dir / CHUNK_FILE
 
     if (
         not vector_path.exists()
         or not chunk_path.exists()
     ):
-
         raise FileNotFoundError(
             "Document has not been indexed yet."
         )
@@ -519,26 +542,3 @@ def load_document_index(
         chunks = json.load(file)
 
     return vector_index, chunks
-
-
-def retrieve_evidence(
-    document_id: str,
-    query: str,
-    top_k: int = 5
-) -> List[Dict]:
-
-    """
-    Backward-compatible retrieval function.
-
-    For multiple questions, prefer creating one
-    DocumentRetriever and reusing it.
-    """
-
-    retriever = DocumentRetriever(
-        document_id
-    )
-
-    return retriever.retrieve(
-        query=query,
-        top_k=top_k
-    )
