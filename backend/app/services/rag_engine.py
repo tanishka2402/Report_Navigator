@@ -1,4 +1,5 @@
-
+import time
+import random
 import json
 import os
 import re
@@ -73,16 +74,14 @@ def get_embedding_client():
 # GENERATE EMBEDDINGS
 # ==================================================
 
+
 def generate_embeddings(
     texts: List[str],
     task_type: str
 ) -> np.ndarray:
     """
-    Generate normalized Gemini embeddings in batches.
-
-    task_type:
-        RETRIEVAL_DOCUMENT for document chunks
-        RETRIEVAL_QUERY for user questions
+    Generate normalized Gemini embeddings in small batches.
+    Includes spacing and retry handling for temporary rate limits.
     """
 
     if not texts:
@@ -92,33 +91,69 @@ def generate_embeddings(
         )
 
     client = get_embedding_client()
-
     all_embeddings = []
 
-    batch_size = 50
+    # Smaller batches reduce request size.
+    batch_size = 10
 
     for start in range(0, len(texts), batch_size):
-
         batch = texts[start:start + batch_size]
 
-        response = client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=batch,
-            config=types.EmbedContentConfig(
-                task_type=task_type,
-                output_dimensionality=EMBEDDING_DIMENSION
-            )
-        )
+        max_attempts = 5
 
-        if not response.embeddings:
-            raise RuntimeError(
-                "Gemini returned no embeddings."
-            )
+        for attempt in range(max_attempts):
+            try:
+                response = client.models.embed_content(
+                    model=EMBEDDING_MODEL,
+                    contents=batch,
+                    config=types.EmbedContentConfig(
+                        task_type=task_type,
+                        output_dimensionality=EMBEDDING_DIMENSION
+                    )
+                )
 
-        all_embeddings.extend(
-            embedding.values
-            for embedding in response.embeddings
-        )
+                if not response.embeddings:
+                    raise RuntimeError(
+                        "Gemini returned no embeddings."
+                    )
+
+                all_embeddings.extend(
+                    embedding.values
+                    for embedding in response.embeddings
+                )
+
+                break
+
+            except Exception as error:
+                error_message = str(error)
+
+                is_rate_limit = (
+                    "429" in error_message
+                    or "RESOURCE_EXHAUSTED" in error_message
+                )
+
+                if not is_rate_limit or attempt == max_attempts - 1:
+                    raise RuntimeError(
+                        "Gemini embedding failed. "
+                        "Check your API quota and billing settings. "
+                        f"Details: {error_message}"
+                    ) from error
+
+                wait_seconds = min(
+                    60,
+                    (2 ** attempt) * 5 + random.uniform(0, 2)
+                )
+
+                print(
+                    f"Gemini rate limit reached. "
+                    f"Retrying in {wait_seconds:.1f} seconds..."
+                )
+
+                time.sleep(wait_seconds)
+
+        # Space out successive batch requests.
+        if start + batch_size < len(texts):
+            time.sleep(1)
 
     embeddings = np.asarray(
         all_embeddings,
@@ -133,17 +168,13 @@ def generate_embeddings(
             f"Unexpected embedding shape: {embeddings.shape}"
         )
 
-    # Normalize vectors for FAISS inner-product similarity.
     norms = np.linalg.norm(
         embeddings,
         axis=1,
         keepdims=True
     )
 
-    embeddings = embeddings / np.maximum(
-        norms,
-        1e-12
-    )
+    embeddings = embeddings / np.maximum(norms, 1e-12)
 
     return embeddings
 
