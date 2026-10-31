@@ -1,0 +1,49 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Uploaded PDFs and generated data
+storage/uploads/
+storage/processed/
+storage/indexes/
+data/uploads/
+data/processed/
+data/indexes/
+
+# Model caches
+.cache/
+models/
+*.safetensors
+*.onnx
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Frontend
+node_modules/
+dist/
+build/

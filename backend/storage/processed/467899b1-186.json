@@ -1,0 +1,306 @@
+[
+  {
+    "page": 1,
+    "text": "SAMPLE DATASET — FICTIONAL / FOR SOFTWARE TESTING ONLY\nPDF page 1\nDISTRICT DEVELOPMENT\nSTATISTICAL REPORT\nIllustrative dataset for testing Report Navigator\nReporting year: 2024–25\nCoverage: Five fictional districts in the fictional state of Dakshin Pradesh\nImportant notice\nThis document is entirely synthetic. All district names, population figures, literacy rates, employment estimates,\nand other statistics are fictional and were created solely to test PDF extraction, table parsing, retrieval,\ncalculations, and page citations. They do not describe any real government, state, district, or population.\nSuggested test questions\n• What is the total population across the five districts?\n• Which district has the highest literacy rate?\n• Compare the female literacy rates of Nandipur and Suryanagar.\n• What is the unemployment rate in each district?\n• What was the change in school enrolment between 2023–24 and 2024–25?\n• Is a district-level poverty rate provided?",
+    "tables": [],
+    "has_text": true
+  },
+  {
+    "page": 2,
+    "text": "SAMPLE DATASET — FICTIONAL / FOR SOFTWARE TESTING ONLY\nPDF page 2\n1. Executive Summary\nThis illustrative report presents selected development indicators for five fictional districts in Dakshin Pradesh. It is\ndesigned to contain both narrative passages and structured statistical tables so that document-intelligence\nsystems can be tested against realistic report-like content.\nAcross the five districts, the combined estimated population is 5,000,000. Suryanagar records the highest literacy\nrate at 92.1%, while Devgarh records the lowest at 78.4%. The report includes population, literacy, employment,\neducation, and health indicators.\nThe figures are point-in-time estimates for demonstration. They should not be interpreted as official statistics or\nused for policy, research, or public decision-making.\nTable 1. District population and literacy indicators\nDistrict\nPopulation\nMale literacy (%)\nFemale literacy (%)\nTotal literacy (%)\nNandipur\n1,250,000\n91.0\n83.0\n87.0\nSuryanagar\n980,000\n95.0\n89.2\n92.1\nDevgarh\n870,000\n83.0\n73.8\n78.4\nKalyanpur\n1,100,000\n90.0\n82.0\n86.0\nMadhavgarh\n800,000\n88.0\n80.0\n84.0\nSource: Synthetic demonstration dataset. Population values are illustrative estimates.",
+    "tables": [
+      {
+        "table_number": 1,
+        "rows": [
+          [
+            "District",
+            "Population",
+            "Male literacy (%)",
+            "Female literacy (%)",
+            "Total literacy (%)"
+          ],
+          [
+            "Nandipur",
+            "1,250,000",
+            "91.0",
+            "83.0",
+            "87.0"
+          ],
+          [
+            "Suryanagar",
+            "980,000",
+            "95.0",
+            "89.2",
+            "92.1"
+          ],
+          [
+            "Devgarh",
+            "870,000",
+            "83.0",
+            "73.8",
+            "78.4"
+          ],
+          [
+            "Kalyanpur",
+            "1,100,000",
+            "90.0",
+            "82.0",
+            "86.0"
+          ],
+          [
+            "Madhavgarh",
+            "800,000",
+            "88.0",
+            "80.0",
+            "84.0"
+          ]
+        ]
+      }
+    ],
+    "has_text": true
+  },
+  {
+    "page": 3,
+    "text": "SAMPLE DATASET — FICTIONAL / FOR SOFTWARE TESTING ONLY\nPDF page 3\n2. Employment Indicators\nEmployment indicators are provided to test exact-value retrieval, ranking, and comparisons. The unemployment\nrate represents the fictional share of the labour force classified as unemployed in this demonstration dataset.\nTable 2. Employment indicators by district, 2024–25\nDistrict\nLabour force\n(persons)\nEmployed (persons)\nUnemployed\n(persons)\nUnemployment rate\n(%)\nNandipur\n610,000\n579,500\n30,500\n5.0\nSuryanagar\n470,000\n451,200\n18,800\n4.0\nDevgarh\n390,000\n362,700\n27,300\n7.0\nKalyanpur\n520,000\n494,000\n26,000\n5.0\nMadhavgarh\n360,000\n342,000\n18,000\n5.0\nSuryanagar has the lowest unemployment rate in this table at 4.0%. Devgarh has the highest rate at 7.0%. The\ndifference between these two rates is 3.0 percentage points.\nNo district-level wage distribution, occupation breakdown, or informal employment estimate is included in this\nreport.\nTable 3. Employment by broad sector\nDistrict\nAgriculture (%)\nIndustry (%)\nServices (%)\nNandipur\n34\n22\n44\nSuryanagar\n18\n27\n55\nDevgarh\n48\n17\n35\nKalyanpur\n29\n25\n46\nMadhavgarh\n39\n20\n41\nSector shares sum to 100% for each district in this illustrative table.",
+    "tables": [
+      {
+        "table_number": 1,
+        "rows": [
+          [
+            "District",
+            "Labour force\n(persons)",
+            "Employed (persons)",
+            "Unemployed\n(persons)",
+            "Unemployment rate\n(%)"
+          ],
+          [
+            "Nandipur",
+            "610,000",
+            "579,500",
+            "30,500",
+            "5.0"
+          ],
+          [
+            "Suryanagar",
+            "470,000",
+            "451,200",
+            "18,800",
+            "4.0"
+          ],
+          [
+            "Devgarh",
+            "390,000",
+            "362,700",
+            "27,300",
+            "7.0"
+          ],
+          [
+            "Kalyanpur",
+            "520,000",
+            "494,000",
+            "26,000",
+            "5.0"
+          ],
+          [
+            "Madhavgarh",
+            "360,000",
+            "342,000",
+            "18,000",
+            "5.0"
+          ]
+        ]
+      },
+      {
+        "table_number": 2,
+        "rows": [
+          [
+            "District",
+            "Agriculture (%)",
+            "Industry (%)",
+            "Services (%)"
+          ],
+          [
+            "Nandipur",
+            "34",
+            "22",
+            "44"
+          ],
+          [
+            "Suryanagar",
+            "18",
+            "27",
+            "55"
+          ],
+          [
+            "Devgarh",
+            "48",
+            "17",
+            "35"
+          ],
+          [
+            "Kalyanpur",
+            "29",
+            "25",
+            "46"
+          ],
+          [
+            "Madhavgarh",
+            "39",
+            "20",
+            "41"
+          ]
+        ]
+      }
+    ],
+    "has_text": true
+  },
+  {
+    "page": 4,
+    "text": "SAMPLE DATASET — FICTIONAL / FOR SOFTWARE TESTING ONLY\nPDF page 4\n3. Education Indicators\nEducation indicators include school enrolment for two academic years. The values below are fictional counts of\nenrolled students across all included school levels.\nTable 4. Student enrolment by district\nDistrict\n2023–24 enrolment\n2024–25 enrolment\nChange (students)\nNandipur\n182,000\n191,100\n9,100\nSuryanagar\n151,000\n158,550\n7,550\nDevgarh\n126,000\n129,780\n3,780\nKalyanpur\n164,000\n172,200\n8,200\nMadhavgarh\n113,000\n117,520\n4,520\nThe largest absolute increase in enrolment occurred in Nandipur, with 9,100 additional students. The percentage\nincrease for Nandipur is 5.0%, calculated as (9,100 ÷ 182,000) × 100.\nTable 5. School infrastructure\nDistrict\nPrimary schools\nSecondary schools\nSchools with electricity (%)\nNandipur\n420\n155\n96\nSuryanagar\n310\n132\n99\nDevgarh\n365\n118\n88\nKalyanpur\n390\n149\n94\nMadhavgarh\n285\n105\n91\nThe report does not provide teacher-to-student ratios or district-wise examination pass rates.",
+    "tables": [
+      {
+        "table_number": 1,
+        "rows": [
+          [
+            "District",
+            "2023–24 enrolment",
+            "2024–25 enrolment",
+            "Change (students)"
+          ],
+          [
+            "Nandipur",
+            "182,000",
+            "191,100",
+            "9,100"
+          ],
+          [
+            "Suryanagar",
+            "151,000",
+            "158,550",
+            "7,550"
+          ],
+          [
+            "Devgarh",
+            "126,000",
+            "129,780",
+            "3,780"
+          ],
+          [
+            "Kalyanpur",
+            "164,000",
+            "172,200",
+            "8,200"
+          ],
+          [
+            "Madhavgarh",
+            "113,000",
+            "117,520",
+            "4,520"
+          ]
+        ]
+      },
+      {
+        "table_number": 2,
+        "rows": [
+          [
+            "District",
+            "Primary schools",
+            "Secondary schools",
+            "Schools with electricity (%)"
+          ],
+          [
+            "Nandipur",
+            "420",
+            "155",
+            "96"
+          ],
+          [
+            "Suryanagar",
+            "310",
+            "132",
+            "99"
+          ],
+          [
+            "Devgarh",
+            "365",
+            "118",
+            "88"
+          ],
+          [
+            "Kalyanpur",
+            "390",
+            "149",
+            "94"
+          ],
+          [
+            "Madhavgarh",
+            "285",
+            "105",
+            "91"
+          ]
+        ]
+      }
+    ],
+    "has_text": true
+  },
+  {
+    "page": 5,
+    "text": "SAMPLE DATASET — FICTIONAL / FOR SOFTWARE TESTING ONLY\nPDF page 5\n4. Health Indicators\nThe health section contains selected service-access indicators. These values are synthetic and are intended to test\nretrieval from tables with several similarly named columns.\nTable 6. Selected health indicators\nDistrict\nHealth centres\nInstitutional births (%)\nFull immunisation (%)\nDoctors per 10,000\nNandipur\n42\n91\n88\n7.2\nSuryanagar\n38\n96\n94\n9.1\nDevgarh\n31\n82\n79\n5.4\nKalyanpur\n40\n90\n87\n6.8\nMadhavgarh\n27\n86\n83\n6.1\nSuryanagar has the highest institutional birth percentage (96%) and full immunisation percentage (94%) among\nthe five districts. Devgarh has the lowest values for both indicators in this table.\nThe report does not contain district-level disease incidence, hospital bed occupancy, or health expenditure figures.",
+    "tables": [
+      {
+        "table_number": 1,
+        "rows": [
+          [
+            "District",
+            "Health centres",
+            "Institutional births (%)",
+            "Full immunisation (%)",
+            "Doctors per 10,000"
+          ],
+          [
+            "Nandipur",
+            "42",
+            "91",
+            "88",
+            "7.2"
+          ],
+          [
+            "Suryanagar",
+            "38",
+            "96",
+            "94",
+            "9.1"
+          ],
+          [
+            "Devgarh",
+            "31",
+            "82",
+            "79",
+            "5.4"
+          ],
+          [
+            "Kalyanpur",
+            "40",
+            "90",
+            "87",
+            "6.8"
+          ],
+          [
+            "Madhavgarh",
+            "27",
+            "86",
+            "83",
+            "6.1"
+          ]
+        ]
+      }
+    ],
+    "has_text": true
+  },
+  {
+    "page": 6,
+    "text": "SAMPLE DATASET — FICTIONAL / FOR SOFTWARE TESTING ONLY\nPDF page 6\n5. Definitions, Methodology and Data Availability\nPopulation: Fictional estimated number of usual residents in each district for the 2024–25 reporting period.\nLiteracy rate: Fictional percentage of the population classified as literate in the illustrative dataset. The report does\nnot specify an age threshold.\nLabour force: Fictional number of persons included in the labour force estimate. Unemployment rate is calculated\nas unemployed persons divided by labour force, multiplied by 100.\nEnrolment change: Difference between the 2024–25 and 2023–24 student enrolment counts. Percentage change\nis calculated relative to the 2023–24 count.\nData availability limitations\nThe following information is intentionally absent: district-level poverty rates, household income distribution,\nmigration flows, crop yields, road length, detailed age-group population, and district-level public expenditure. A\nreliable question-answering system should report these as not found in this document rather than infer or fabricate\nvalues.\nSuggested evaluation prompts\n1. What is the combined population of all five districts?\n2. Which district has the highest total literacy rate?\n3. What is the literacy-rate difference between Suryanagar and Devgarh?\n4. Which district has the highest unemployment rate?\n5. Calculate the percentage increase in enrolment in Kalyanpur.\n6. Which district has the most health centres?\n7. What is the poverty rate in Madhavgarh?\n8. Does the report provide average household income?\nEnd of illustrative report. All content and statistics are fictional.",
+    "tables": [],
+    "has_text": true
+  }
+]
