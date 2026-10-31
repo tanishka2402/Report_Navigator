@@ -47,3 +47,25 @@ logs/
 node_modules/
 dist/
 build/
+# Generated document data
+backend/storage/uploads/
+backend/storage/processed/
+backend/storage/indexes/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Frontend dependencies and builds
+node_modules/
+dist/
+
+# macOS
+.DS_Store
