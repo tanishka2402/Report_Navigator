@@ -1,134 +1,295 @@
 
 import json
-import re
+import logging
+import os
 import uuid
+
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, List, Optional
 
 from fastapi import (
     FastAPI,
-    File,
-    HTTPException,
     UploadFile,
+    File,
+    HTTPException
 )
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.pdf_processor import extract_pdf
-from app.services.answer_engine import generate_answer
+
 from app.services.rag_engine import (
-    DocumentRetriever,
     build_document_index,
+    DocumentRetriever
+)
+
+from app.services.answer_engine import generate_answer
+
+
+# ---------------------------------------------------------
+# Logging
+# ---------------------------------------------------------
+
+logging.basicConfig(level=logging.INFO)
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------
+# Application configuration
+# ---------------------------------------------------------
+
+app = FastAPI(
+    title="Report Navigator API",
+    description=(
+        "Evidence-grounded question answering "
+        "for long statistical PDF reports."
+    ),
+    version="2.0.0"
 )
 
 
-# ==================================================
-# 1. PROJECT CONFIGURATION
-# ==================================================
+# ---------------------------------------------------------
+# CORS configuration
+# ---------------------------------------------------------
+
+FRONTEND_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "FRONTEND_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173"
+    ).split(",")
+    if origin.strip()
+]
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ---------------------------------------------------------
+# Storage configuration
+# ---------------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 STORAGE_DIR = BASE_DIR / "storage"
 
 UPLOAD_DIR = STORAGE_DIR / "uploads"
+
 PROCESSED_DIR = STORAGE_DIR / "processed"
+
 INDEX_DIR = STORAGE_DIR / "indexes"
 
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 
+ALLOWED_EXTENSION = ".pdf"
 
-ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
-
-
-# Create required directories
 for directory in [
     UPLOAD_DIR,
     PROCESSED_DIR,
-    INDEX_DIR,
+    INDEX_DIR
 ]:
     directory.mkdir(
         parents=True,
-        exist_ok=True,
+        exist_ok=True
     )
 
 
-# ==================================================
-# 2. IN-MEMORY RETRIEVER CACHE
-# ==================================================
+# ---------------------------------------------------------
+# Retriever cache
+# ---------------------------------------------------------
 
-# Keeps indexed documents in memory so FAISS,
-# chunks, and BM25 are not reloaded for every query.
 retriever_cache: Dict[str, DocumentRetriever] = {}
 
 
-def get_retriever(
-    document_id: str,
-) -> DocumentRetriever:
+def validate_document_id(document_id: str) -> str:
     """
-    Return a cached DocumentRetriever.
+    Validate and normalize document UUID.
+    """
 
-    If the retriever is not already loaded,
-    load it once and store it in memory.
+    try:
+        return str(uuid.UUID(document_id))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid document ID."
+        )
+
+
+def get_processed_path(document_id: str) -> Path:
+
+    return PROCESSED_DIR / f"{document_id}.json"
+
+
+def get_retriever(document_id: str) -> DocumentRetriever:
     """
+    Load a retriever once and reuse it for subsequent queries.
+    """
+
+    document_id = validate_document_id(document_id)
 
     if document_id not in retriever_cache:
 
-        retriever_cache[document_id] = (
-            DocumentRetriever(document_id)
-        )
+        processed_path = get_processed_path(document_id)
+
+        if not processed_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="Processed document not found."
+            )
+
+        try:
+            retriever_cache[document_id] = (
+                DocumentRetriever(document_id)
+            )
+
+        except Exception as exc:
+
+            logger.exception(
+                "Failed to load document retriever."
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail="Document index could not be loaded."
+            ) from exc
 
     return retriever_cache[document_id]
 
 
-def clear_retriever_cache(
-    document_id: str,
-):
-    """
-    Remove a document retriever from cache.
+def clear_retriever_cache(document_id: str) -> None:
 
-    Used after re-indexing so the next query
-    loads the newest version.
+    retriever_cache.pop(document_id, None)
+
+
+# ---------------------------------------------------------
+# Document loading helpers
+# ---------------------------------------------------------
+
+
+def load_processed_document(
+    document_id: str
+) -> Dict[str, Any]:
+    """
+    Load processed document data.
+
+    Supports both:
+    1. New dictionary format containing pages and metadata.
+    2. Legacy list format containing only extracted pages.
     """
 
-    retriever_cache.pop(
-        document_id,
-        None,
+    document_id = validate_document_id(document_id)
+    processed_path = get_processed_path(document_id)
+
+    if not processed_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found."
+        )
+
+    try:
+        with open(
+            processed_path,
+            "r",
+            encoding="utf-8"
+        ) as file:
+            data = json.load(file)
+
+        # Handle older files where JSON contains
+        # a list of pages instead of a dictionary.
+        if isinstance(data, list):
+            pages = data
+
+            page_count = len(pages)
+
+            text_pages = sum(
+                1
+                for page in pages
+                if isinstance(page, dict)
+                and get_page_text(page).strip()
+            )
+
+            scanned_pages = page_count - text_pages
+
+            table_count = sum(
+                len(page.get("tables", []) or [])
+                for page in pages
+                if isinstance(page, dict)
+            )
+
+            # Check whether the existing index is present.
+            index_path = INDEX_DIR / document_id
+
+            indexed = (
+                (index_path / "vectors.faiss").is_file()
+                and (index_path / "chunks.json").is_file()
+            )
+
+            data = {
+                "document_id": document_id,
+                "filename": None,
+                "pages": pages,
+                "page_count": page_count,
+                "text_pages": text_pages,
+                "scanned_pages": scanned_pages,
+                "table_count": table_count,
+                "indexed": indexed
+            }
+
+        elif not isinstance(data, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="Invalid processed document format."
+            )
+
+        return data
+
+    except json.JSONDecodeError as exc:
+        logger.exception(
+            "Processed document JSON is invalid."
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Processed document data is corrupted."
+        ) from exc
+
+
+
+def get_page_text(page: Dict[str, Any]) -> str:
+
+    return str(
+        page.get(
+            "text",
+            page.get("content", page.get("page_text", ""))
+        ) or ""
     )
 
 
-# ==================================================
-# 3. FASTAPI APPLICATION
-# ==================================================
+def get_page_number(
+    page: Dict[str, Any],
+    fallback: int
+) -> int:
 
-app = FastAPI(
-    title="Report Navigator",
-    description=(
-        "Evidence-first government statistics "
-        "report analysis using Hybrid RAG."
-    ),
-    version="1.0.0",
-)
+    try:
+        return int(page.get("page", fallback))
+    except (TypeError, ValueError):
+        return fallback
 
 
-# ==================================================
-# 4. CORS CONFIGURATION
-# ==================================================
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ==================================================
-# 5. REQUEST MODELS
-# ==================================================
+# ---------------------------------------------------------
+# Request models
+# ---------------------------------------------------------
 
 class QueryRequest(BaseModel):
 
@@ -136,178 +297,37 @@ class QueryRequest(BaseModel):
 
     question: str = Field(
         min_length=3,
-        max_length=1000,
+        max_length=1000
     )
 
     top_k: int = Field(
         default=5,
         ge=1,
-        le=15,
+        le=15
     )
 
 
-# ==================================================
-# 6. HELPER FUNCTIONS
-# ==================================================
-
-def validate_document_id(
-    document_id: str,
-):
-    """
-    Validate the document UUID.
-    """
-
-    if re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{3}", document_id):
-        return
-
-    try:
-        uuid.UUID(document_id)
-
-    except (ValueError, TypeError):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid document ID.",
-        )
-
-
-def get_processed_document(
-    document_id: str,
-):
-    """
-    Load processed page-wise document data.
-    """
-
-    validate_document_id(document_id)
-
-    file_path = (
-        PROCESSED_DIR /
-        f"{document_id}.json"
-    )
-
-    if not file_path.exists():
-
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found.",
-        )
-
-    try:
-
-        return json.loads(
-            file_path.read_text(
-                encoding="utf-8",
-            )
-        )
-
-    except json.JSONDecodeError:
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Stored document data is corrupted."
-            ),
-        )
-
-
-def document_index_exists(
-    document_id: str,
-) -> bool:
-    """
-    Check whether a document has been indexed.
-    """
-
-    document_dir = (
-        INDEX_DIR / document_id
-    )
-
-    vector_file = (
-        document_dir / "vectors.faiss"
-    )
-
-    chunk_file = (
-        document_dir / "chunks.json"
-    )
-
-    return (
-        vector_file.exists()
-        and chunk_file.exists()
-    )
-
-
-def format_evidence(
-    evidence,
-):
-    """
-    Format retrieval results for API responses.
-    """
-
-    formatted = []
-
-    for item in evidence:
-
-        result = {
-            "chunk_id": item.get("chunk_id"),
-            "document_id": item.get(
-                "document_id"
-            ),
-            "page": item.get("page"),
-            "content": item.get(
-                "content"
-            ),
-            "source_type": item.get(
-                "source_type"
-            ),
-            "rrf_score": round(
-                float(
-                    item.get(
-                        "rrf_score",
-                        0,
-                    )
-                ),
-                6,
-            ),
-        }
-
-        # Preserve table metadata when available
-        if "table_number" in item:
-            result["table_number"] = (
-                item["table_number"]
-            )
-
-        if "row_number" in item:
-            result["row_number"] = (
-                item["row_number"]
-            )
-
-        formatted.append(result)
-
-    return formatted
-
-
-# ==================================================
-# 7. HOME ROUTE
-# ==================================================
+# ---------------------------------------------------------
+# Root endpoint
+# ---------------------------------------------------------
 
 @app.get("/")
-def home():
+def root():
 
     return {
-        "project": "Report Navigator",
-        "description": (
-            "Evidence-first government report "
-            "intelligence system"
-        ),
-        "version": "1.0.0",
+        "service": "Report Navigator Backend",
+        "version": "2.0.0",
         "status": "running",
+        "documentation": "/docs"
     }
 
 
-# ==================================================
-# 8. HEALTH CHECK
-# ==================================================
+# ---------------------------------------------------------
+# Health endpoint
+# ---------------------------------------------------------
 
 @app.get("/api/health")
-def health():
+def health_check():
 
     return {
         "status": "healthy",
@@ -321,562 +341,458 @@ def health():
             "BM25 keyword search",
             "Reciprocal Rank Fusion",
             "Evidence retrieval",
-        ],
+            "Gemini answer generation",
+            "Citation validation",
+            "Abstention for missing information"
+        ]
     }
 
 
-# ==================================================
-# 9. UPLOAD PDF DOCUMENT
-# ==================================================
+# ---------------------------------------------------------
+# Upload and process PDF
+# ---------------------------------------------------------
 
 @app.post("/api/documents/upload")
-async def upload_pdf(
-    file: UploadFile = File(...),
+async def upload_document(
+    file: UploadFile = File(...)
 ):
+    """
+    Upload a PDF and extract page-wise text and tables.
+    """
 
     if not file.filename:
-
         raise HTTPException(
             status_code=400,
-            detail="Filename is missing.",
+            detail="No filename supplied."
         )
 
-    if not file.filename.lower().endswith(
-        ".pdf"
-    ):
+    original_filename = Path(file.filename).name
 
+    if Path(original_filename).suffix.lower() != ALLOWED_EXTENSION:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Only PDF files are supported."
-            ),
+            detail="Only PDF files are supported."
         )
 
-    # Use full UUID for robust validation
     document_id = str(uuid.uuid4())
 
-    file_path = (
-        UPLOAD_DIR /
-        f"{document_id}.pdf"
+    upload_path = (
+        UPLOAD_DIR / f"{document_id}.pdf"
     )
+
+    processed_path = get_processed_path(document_id)
 
     try:
 
-        # ----------------------------------------------
-        # Read uploaded file
-        # ----------------------------------------------
+        # Read one byte beyond the limit to detect oversized files.
+        file_content = await file.read(
+            MAX_UPLOAD_SIZE + 1
+        )
 
-        content = await file.read()
-
-        if not content:
-
-            raise HTTPException(
-                status_code=400,
-                detail="Uploaded file is empty.",
-            )
-
-        if len(content) > MAX_FILE_SIZE:
-
+        if len(file_content) > MAX_UPLOAD_SIZE:
             raise HTTPException(
                 status_code=413,
-                detail=(
-                    "PDF must be smaller than "
-                    "50 MB."
-                ),
+                detail="PDF exceeds the 50 MB upload limit."
             )
 
-        # ----------------------------------------------
-        # Basic PDF validation
-        # ----------------------------------------------
-
-        if not content.startswith(b"%PDF-"):
-
+        if not file_content.startswith(b"%PDF"):
             raise HTTPException(
                 status_code=400,
-                detail="Invalid PDF file.",
+                detail="Uploaded file is not a valid PDF."
             )
 
-        # ----------------------------------------------
-        # Save uploaded PDF
-        # ----------------------------------------------
+        with open(upload_path, "wb") as output_file:
+            output_file.write(file_content)
 
-        file_path.write_bytes(content)
-
-        # ----------------------------------------------
-        # Extract pages and tables
-        # ----------------------------------------------
-
-        pages = extract_pdf(
-            str(file_path)
+        # Extract PDF content.
+        extracted_data = extract_pdf(
+            str(upload_path)
         )
 
-        if not pages:
+        if isinstance(extracted_data, list):
+            extracted_data = {
+                "pages": extracted_data
+            }
 
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "No pages found in PDF."
-                ),
+        if not isinstance(extracted_data, dict):
+            raise ValueError(
+                "PDF processor returned an unexpected result."
             )
 
-        # ----------------------------------------------
-        # Calculate extraction statistics
-        # ----------------------------------------------
+        pages = extracted_data.get("pages", [])
 
-        total_text_pages = sum(
-            bool(
-                page.get(
-                    "has_text",
-                    False,
-                )
+        if not isinstance(pages, list) or not pages:
+            raise ValueError(
+                "No pages were extracted from the PDF."
             )
+
+        page_count = len(pages)
+
+        text_pages = sum(
+            1
+            for page in pages
+            if get_page_text(page).strip()
+        )
+
+        scanned_pages = page_count - text_pages
+
+        table_count = sum(
+            len(page.get("tables", []) or [])
             for page in pages
         )
 
-        total_tables = sum(
-            len(
-                page.get(
-                    "tables",
-                    [],
-                )
-            )
-            for page in pages
-        )
+        # Preserve all extracted data and add document metadata.
+        processed_data = {
+            **extracted_data,
+            "document_id": document_id,
+            "filename": original_filename,
+            "page_count": page_count,
+            "text_pages": text_pages,
+            "scanned_pages": scanned_pages,
+            "table_count": table_count,
+            "indexed": False
+        }
 
-        scanned_pages = (
-            len(pages) - total_text_pages
-        )
+        with open(
+            processed_path,
+            "w",
+            encoding="utf-8"
+        ) as json_file:
 
-        # Do NOT crash simply because some pages
-        # have no extractable text.
-        #
-        # This allows mixed scanned/text PDFs.
-        # If the entire report has no searchable
-        # content, indexing will safely fail later.
-
-        # ----------------------------------------------
-        # Save extracted document
-        # ----------------------------------------------
-
-        output_path = (
-            PROCESSED_DIR /
-            f"{document_id}.json"
-        )
-
-        output_path.write_text(
-            json.dumps(
-                pages,
+            json.dump(
+                processed_data,
+                json_file,
                 ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
+                indent=2
+            )
+
+        logger.info(
+            "PDF processed successfully: %s",
+            document_id
         )
 
         return {
             "success": True,
             "document_id": document_id,
-            "filename": file.filename,
-            "page_count": len(pages),
-            "text_pages": total_text_pages,
+            "filename": original_filename,
+            "page_count": page_count,
+            "text_pages": text_pages,
             "scanned_pages": scanned_pages,
-            "table_count": total_tables,
-            "file_size_bytes": len(content),
+            "table_count": table_count,
+            "file_size_bytes": len(file_content),
             "indexed": False,
-            "message": (
-                "PDF uploaded and processed "
-                "successfully."
-            ),
+            "message": "PDF uploaded and processed successfully."
         }
 
     except HTTPException:
-
-        file_path.unlink(
-            missing_ok=True
-        )
-
         raise
 
-    except Exception as error:
+    except Exception as exc:
 
-        file_path.unlink(
-            missing_ok=True
+        logger.exception(
+            "PDF upload or processing failed."
         )
+
+        upload_path.unlink(missing_ok=True)
+        processed_path.unlink(missing_ok=True)
 
         raise HTTPException(
-            status_code=422,
-            detail=(
-                "PDF processing failed: "
-                f"{str(error)}"
-            ),
-        )
+            status_code=500,
+            detail=f"PDF processing failed: {str(exc)}"
+        ) from exc
 
     finally:
-
         await file.close()
 
 
-# ==================================================
-# 10. GET COMPLETE DOCUMENT
-# ==================================================
+# ---------------------------------------------------------
+# Get processed document information
+# ---------------------------------------------------------
 
-@app.get(
-    "/api/documents/{document_id}"
-)
-def get_document(
-    document_id: str,
-):
+@app.get("/api/documents/{document_id}")
+def get_document(document_id: str):
 
-    pages = get_processed_document(
-        document_id
-    )
+    document_id = validate_document_id(document_id)
+
+    data = load_processed_document(document_id)
 
     return {
         "success": True,
         "document_id": document_id,
-        "page_count": len(pages),
-        "pages": pages,
+        "filename": data.get("filename"),
+        "page_count": data.get("page_count"),
+        "text_pages": data.get("text_pages"),
+        "scanned_pages": data.get("scanned_pages"),
+        "table_count": data.get("table_count"),
+        "indexed": data.get("indexed", False)
     }
 
 
-# ==================================================
-# 11. GET SPECIFIC PDF PAGE
-# ==================================================
+# ---------------------------------------------------------
+# Get individual PDF page
+# ---------------------------------------------------------
 
 @app.get(
-    "/api/documents/"
-    "{document_id}/pages/{page_number}"
+    "/api/documents/{document_id}/pages/{page_number}"
 )
 def get_document_page(
     document_id: str,
-    page_number: int,
+    page_number: int
 ):
 
-    pages = get_processed_document(
-        document_id
-    )
+    document_id = validate_document_id(document_id)
 
-    if (
-        page_number < 1
-        or page_number > len(pages)
-    ):
-
+    if page_number < 1:
         raise HTTPException(
-            status_code=404,
-            detail="Page not found.",
+            status_code=400,
+            detail="Page number must start from 1."
         )
 
-    return {
-        "success": True,
-        "document_id": document_id,
-        **pages[page_number - 1],
-    }
+    data = load_processed_document(document_id)
+
+    pages = data.get("pages", [])
+
+    for index, page in enumerate(pages, start=1):
+
+        current_page = get_page_number(
+            page,
+            index
+        )
+
+        if current_page == page_number:
+
+            return {
+                "success": True,
+                "document_id": document_id,
+                "page": current_page,
+                "text": get_page_text(page),
+                "tables": page.get("tables", []),
+                "has_text": bool(
+                    get_page_text(page).strip()
+                )
+            }
+
+    raise HTTPException(
+        status_code=404,
+        detail="Requested PDF page not found."
+    )
 
 
-# ==================================================
-# 12. BUILD HYBRID RAG INDEX
-# ==================================================
+# ---------------------------------------------------------
+# Build hybrid RAG index
+# ---------------------------------------------------------
 
 @app.post(
     "/api/documents/{document_id}/index"
 )
-def index_document(
-    document_id: str,
-):
+def index_document(document_id: str):
+    """
+    Build FAISS + BM25 + RRF index for a document.
+    """
+
+    document_id = validate_document_id(document_id)
+
+    data = load_processed_document(document_id)
+
+    pages = data.get("pages", [])
+
+    if not pages:
+        raise HTTPException(
+            status_code=400,
+            detail="Document contains no extracted pages."
+        )
+
+    clear_retriever_cache(document_id)
 
     try:
 
-        # ----------------------------------------------
-        # Load processed document
-        # ----------------------------------------------
-
-        pages = get_processed_document(
-            document_id
+        index_result = build_document_index(
+            document_id,
+            pages
         )
 
-        # ----------------------------------------------
-        # Check whether there is searchable content
-        # ----------------------------------------------
+        # Mark the processed document as indexed.
+        data["indexed"] = True
 
-        has_searchable_content = any(
-            page.get("text", "").strip()
-            or page.get("tables")
-            for page in pages
-        )
+        processed_path = get_processed_path(document_id)
 
-        if not has_searchable_content:
+        with open(
+            processed_path,
+            "w",
+            encoding="utf-8"
+        ) as json_file:
 
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "No searchable text or tables "
-                    "were found in this PDF."
-                ),
+            json.dump(
+                data,
+                json_file,
+                ensure_ascii=False,
+                indent=2
             )
 
-        # ----------------------------------------------
-        # Clear old retriever
-        # ----------------------------------------------
-
-        clear_retriever_cache(
-            document_id
+        # Load the retriever after index creation.
+        retriever_cache[document_id] = (
+            DocumentRetriever(document_id)
         )
 
-        # ----------------------------------------------
-        # Build FAISS index
-        # ----------------------------------------------
-
-        result = build_document_index(
-            document_id=document_id,
-            pages=pages,
+        # Support optional index statistics returned by
+        # build_document_index().
+        stats = (
+            index_result
+            if isinstance(index_result, dict)
+            else {}
         )
 
         return {
             "success": True,
-            "message": (
-                "Hybrid RAG index created "
-                "successfully."
-            ),
+            "message": "Hybrid RAG index created successfully.",
             "document_id": document_id,
-            "total_chunks": result[
-                "total_chunks"
-            ],
-            "text_chunks": result[
-                "text_chunks"
-            ],
-            "table_chunks": result[
-                "table_chunks"
-            ],
+            "total_chunks": stats.get("total_chunks"),
+            "text_chunks": stats.get("text_chunks"),
+            "table_chunks": stats.get("table_chunks"),
             "index_type": [
                 "FAISS",
                 "BM25",
-                "RRF",
-            ],
+                "RRF"
+            ]
         }
 
     except HTTPException:
         raise
 
-    except FileNotFoundError as error:
+    except Exception as exc:
 
-        raise HTTPException(
-            status_code=404,
-            detail=str(error),
+        clear_retriever_cache(document_id)
+
+        logger.exception(
+            "Document indexing failed."
         )
-
-    except ValueError as error:
-
-        raise HTTPException(
-            status_code=422,
-            detail=str(error),
-        )
-
-    except Exception as error:
 
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Indexing failed: "
-                f"{str(error)}"
-            ),
+            detail=f"Index creation failed: {str(exc)}"
+        ) from exc
+
+
+# ---------------------------------------------------------
+# Internal evidence retrieval
+# ---------------------------------------------------------
+
+def retrieve_document_evidence(
+    document_id: str,
+    question: str,
+    top_k: int
+) -> List[Dict[str, Any]]:
+
+    document_id = validate_document_id(document_id)
+
+    data = load_processed_document(document_id)
+
+    if not data.get("indexed", False):
+        raise HTTPException(
+            status_code=400,
+            detail="Document has not been indexed yet."
         )
 
+    retriever = get_retriever(document_id)
 
-# ==================================================
-# 13. HYBRID RAG EVIDENCE QUERY
-# ==================================================
+    evidence = retriever.retrieve(
+        question,
+        top_k=top_k
+    )
+
+    if evidence is None:
+        return []
+
+    if not isinstance(evidence, list):
+        raise HTTPException(
+            status_code=500,
+            detail="Retriever returned an invalid evidence format."
+        )
+
+    return evidence
+
+
+# ---------------------------------------------------------
+# Query endpoint: evidence retrieval only
+# ---------------------------------------------------------
 
 @app.post("/api/query")
-def query_document(
-    request: QueryRequest,
-):
+def query_document(request: QueryRequest):
+    """
+    Retrieve relevant text and table evidence.
+    Does not call the LLM.
+    """
 
-    try:
+    document_id = validate_document_id(
+        request.document_id
+    )
 
-        # Validate document exists
-        get_processed_document(
-            request.document_id
-        )
+    evidence = retrieve_document_evidence(
+        document_id=document_id,
+        question=request.question,
+        top_k=request.top_k
+    )
 
-        if not document_index_exists(
-            request.document_id
-        ):
-
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Document has not been indexed yet. "
-                    "Call the index endpoint first."
-                ),
-            )
-
-        # Load cached retriever
-        retriever = get_retriever(
-            request.document_id
-        )
-
-        # Retrieve evidence
-        evidence = retriever.retrieve(
-            query=request.question,
-            top_k=request.top_k,
-        )
-
-        formatted_evidence = (
-            format_evidence(evidence)
-        )
-
-        return {
-            "success": True,
-            "document_id": (
-                request.document_id
-            ),
-            "question": request.question,
-            "total_results": len(
-                formatted_evidence
-            ),
-            "retrieval_method": (
-                "Hybrid RAG "
-                "(FAISS + BM25 + RRF)"
-            ),
-            "evidence": formatted_evidence,
-        }
-
-    except HTTPException:
-        raise
-
-    except FileNotFoundError as error:
-
-        raise HTTPException(
-            status_code=404,
-            detail=str(error),
-        )
-
-    except ValueError as error:
-
-        raise HTTPException(
-            status_code=400,
-            detail=str(error),
-        )
-
-    except Exception as error:
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Search failed: "
-                f"{str(error)}"
-            ),
-        )
+    return {
+        "success": True,
+        "document_id": document_id,
+        "question": request.question,
+        "total_results": len(evidence),
+        "retrieval_method": "Hybrid RAG (FAISS + BM25 + RRF)",
+        "evidence": evidence
+    }
 
 
-# ==================================================
-# 14. ANSWER QUESTION
-# ==================================================
+# ---------------------------------------------------------
+# Answer endpoint: retrieval + Gemini
+# ---------------------------------------------------------
 
 @app.post("/api/answer")
-async def answer_question(
-    request: QueryRequest,
-):
+async def answer_question(request: QueryRequest):
+    """
+    Retrieve evidence and generate a grounded answer
+    using the Gemini API.
+    """
 
-    try:
+    document_id = validate_document_id(
+        request.document_id
+    )
 
-        # Validate document
-        get_processed_document(
-            request.document_id
-        )
+    evidence = retrieve_document_evidence(
+        document_id=document_id,
+        question=request.question,
+        top_k=request.top_k
+    )
 
-        if not document_index_exists(
-            request.document_id
-        ):
+    result = await generate_answer(
+        request.question,
+        evidence
+    )
 
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Document has not been indexed yet. "
-                    "Call the index endpoint first."
-                ),
-            )
-
-        # Retrieve evidence
-        retriever = get_retriever(
-            request.document_id
-        )
-
-        evidence = retriever.retrieve(
-            query=request.question,
-            top_k=request.top_k,
-        )
-
-        # Generate grounded answer
-        result = await generate_answer(
-            question=request.question,
-            evidence=evidence,
-        )
-
-        return {
-            "success": True,
-            "document_id": (
-                request.document_id
-            ),
-            "question": request.question,
-            "answer": result["answer"],
-            "citations": result["citations"],
-            "status": result["status"],
-            "evidence": format_evidence(
-                evidence
-            ),
-        }
-
-    except HTTPException:
-        raise
-
-    except RuntimeError as error:
-
-        raise HTTPException(
-            status_code=503,
-            detail=str(error),
-        )
-
-    except ValueError as error:
-
-        raise HTTPException(
-            status_code=400,
-            detail=str(error),
-        )
-
-    except Exception as error:
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Answer generation failed: "
-                f"{str(error)}"
-            ),
-        )
+    return {
+        "success": result["status"] != "error",
+        "document_id": document_id,
+        "question": request.question,
+        "answer": result["answer"],
+        "citations": result["citations"],
+        "status": result["status"],
+        "evidence": evidence
+    }
 
 
-# ==================================================
-# 15. APPLICATION STARTUP
-# ==================================================
+# ---------------------------------------------------------
+# Startup message
+# ---------------------------------------------------------
 
 @app.on_event("startup")
 async def startup_event():
 
-    print("=" * 60)
+    logger.info(
+        "Report Navigator backend started."
+    )
 
-    print("REPORT NAVIGATOR BACKEND")
-
-    print("Status: Running")
-
-    print("PDF Processing: Enabled")
-
-    print("Table Extraction: Enabled")
-
-    print("FAISS: Enabled")
-
-    print("BM25: Enabled")
-
-    print("Hybrid Retrieval: Enabled")
-
-    print("Evidence Citations: Enabled")
-
-    print("=" * 60)
+    if not os.getenv("GEMINI_API_KEY"):
+        logger.warning(
+            "GEMINI_API_KEY is not configured. "
+            "Answer generation will not work."
+        )
