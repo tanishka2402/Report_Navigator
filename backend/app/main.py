@@ -157,6 +157,9 @@ def validate_document_id(
     Validate the document UUID.
     """
 
+    if re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{3}", document_id):
+        return
+
     try:
         uuid.UUID(document_id)
 
